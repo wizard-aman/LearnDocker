@@ -17,6 +17,7 @@ public class EmployeesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
+        // this is for getAll Employee
         var employees = await _db.Employees
             .Include(e => e.Department)
             .Select(e => new EmployeeResponseDto(
