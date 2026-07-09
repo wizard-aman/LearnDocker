@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Real HTTP client se test karta hai — actual API calls -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+    <!-- Test framework -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
+    <!-- Better assertions — should be / should not be style -->
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Main project ko reference karo -->
+    <ProjectReference Include="..\EmployeeApp\EmployeeApp.csproj" />
+  </ItemGroup>
+</Project>

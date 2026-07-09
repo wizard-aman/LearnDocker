@@ -1,0 +1,17 @@
+# Build output — source se compile hoga, ye nahi chahiye
+bin/
+obj/
+
+# IDE files
+.vs/
+*.user
+
+# Git
+.git/
+.github/
+
+# Tests — runtime image mein test project nahi chahiye
+EmployeeApp.Tests/
+
+# Docs
+*.md

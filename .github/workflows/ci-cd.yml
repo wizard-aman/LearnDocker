@@ -1,0 +1,237 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GITHUB ACTIONS — CI/CD PIPELINE
+# File: .github/workflows/ci-cd.yml
+#
+# WHAT IS THIS FILE?
+# Ye YAML file GitHub ko batati hai ki jab bhi code push ho,
+# kya kya automatically karna hai.
+#
+# WHERE DOES IT RUN?
+# GitHub ke servers pe (called "runners") — tumhare machine pe kuch nahi hota
+# GitHub free mein 2000 minutes/month deta hai — kafi hai
+#
+# FLOW:
+# git push
+#   → Job 1: build-and-test  (har push pe — PR pe bhi)
+#       dotnet restore → dotnet build → dotnet test
+#   → Job 2: docker-build     (sirf main branch pe)
+#       docker build → docker push (GitHub Container Registry - FREE)
+#   → Job 3: deploy           (sirf main branch pe, manual approval optional)
+#       Azure App Service pe deploy
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: EmployeeApp CI/CD
+
+# ── TRIGGERS — kab chale ye pipeline ──────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main       # main pe push → full pipeline (build + test + docker + deploy)
+      - develop    # develop pe push → sirf build + test
+  pull_request:
+    branches:
+      - main       # main pe PR → sirf build + test (deploy nahi)
+                   # Isse ensure hota hai ki broken code merge na ho
+
+# ── ENVIRONMENT VARIABLES — ek jagah define, sabhi jobs mein use ──────────────
+env:
+  DOTNET_VERSION: '8.0.x'
+  # GitHub Container Registry (GHCR) — Docker Hub jaisa but FREE + GitHub ke saath
+  # Image URL format: ghcr.io/username/reponame/imagename:tag
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/employeeapp
+  AZURE_APP_NAME: employeeapp-demo   # Azure App Service ka naam — apna naam dalo
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 1: BUILD AND TEST
+# Har push pe chalta hai — main, develop, aur PR dono par
+# Agar ye fail ho to Job 2 aur 3 nahi chalte
+# ═══════════════════════════════════════════════════════════════════════════════
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest   # GitHub ka free Linux runner
+
+    steps:
+      # Step 1: Code download karo runner pe
+      # checkout = git clone jaisa, runner ke paas code aa jaata hai
+      - name: Checkout code
+        uses: actions/checkout@v4
+        # "uses" matlab koi ready-made action use karo
+        # actions/checkout GitHub ka official action hai
+
+      # Step 2: .NET install karo runner pe
+      # Runner pe .NET pehle se nahi hota — install karna padta hai
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Step 3: NuGet packages download karo (npm install jaisa)
+      # Cache use karo — agar packages change nahi hue to download skip hoga
+      - name: Restore NuGet packages
+        run: dotnet restore EmployeeApp.sln
+        # "run" matlab direct command chalao — terminal jaisa
+
+      # Step 4: Code compile karo — syntax errors yahan milenge
+      - name: Build solution
+        run: dotnet build EmployeeApp.sln --configuration Release --no-restore
+        # --configuration Release: production optimized build
+        # --no-restore: already restore kiya upar, dobara mat karo
+
+      # Step 5: TEST CASES CHALAO — yahi CI ka actual kaam hai
+      # Agar koi test fail ho to ye step fail hoga → Job 2, 3 nahi chalenge
+      - name: Run tests
+        run: |
+          dotnet test EmployeeApp.Tests/EmployeeApp.Tests.csproj \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory ./TestResults
+        # --logger trx: test results ek file mein save hote hain
+        # GitHub UI mein dikhte hain Actions tab mein
+
+      # Step 6: Test results GitHub mein upload karo
+      # Chahe test pass ho ya fail — results hamesha upload karo (if: always())
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()   # test fail hone par bhi upload karo — debugging ke liye
+        with:
+          name: test-results-${{ github.run_number }}
+          path: ./TestResults
+          retention-days: 30   # 30 din baad automatically delete
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 2: DOCKER BUILD AND PUSH
+# Sirf main branch pe push hone par chalta hai
+# Job 1 pass hone ke baad hi chalta hai (needs: build-and-test)
+# ═══════════════════════════════════════════════════════════════════════════════
+  docker-build-push:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build-and-test   # JOB 1 pass hone ke baad hi shuru ho
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Explanation:
+    #   github.ref: current branch reference
+    #   github.event_name: push event hai (PR nahi)
+    #   Dono conditions true hone par hi Docker job chalega
+
+    # Docker image push ke liye permission chahiye
+    permissions:
+      contents: read
+      packages: write   # GHCR pe push karne ke liye
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Docker BuildKit enable karo — faster builds, better caching
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        # Buildx = advanced Docker build system
+        # Layer caching support karta hai — ACR/GHCR se cache pull kar sakta hai
+
+      # GHCR mein login karo
+      # GITHUB_TOKEN automatically available hota hai — koi secret set nahi karna
+      - name: Login to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}          # jo push kiya uska username
+          password: ${{ secrets.GITHUB_TOKEN }}  # auto-generated token
+          # GITHUB_TOKEN:
+          # - GitHub automatically create karta hai har workflow run ke liye
+          # - Sirf is repo ke liye valid hai
+          # - Expire ho jaata hai job ke baad
+          # - Kuch set nahi karna padta — magic!
+
+      # Image tags decide karo
+      # Multiple tags banate hain:
+      #   :latest         → hamesha latest build
+      #   :main           → branch name
+      #   :abc1234        → exact commit hash (immutable — specific build identify karo)
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # DOCKER IMAGE BUILD AND PUSH
+      # Yahi sabse important step hai
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .                          # Dockerfile kahan hai (root)
+          file: EmployeeApp/Dockerfile        # Dockerfile ka exact path
+          push: true                          # Build ke baad GHCR pe push karo
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache — GHCR se cache pull karo
+          # Agar layers change nahi hue to pull skip hoga → faster builds
+          cache-from: type=gha               # GitHub Actions cache
+          cache-to: type=gha,mode=max
+
+      # Next job ke liye image tag save karo
+      - name: Save image digest for deploy
+        run: echo "${{ steps.meta.outputs.tags }}" | head -1 > image-tag.txt
+
+      - name: Upload image tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tag
+          path: image-tag.txt
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB 3: DEPLOY TO AZURE
+# Sirf main branch pe, Job 2 ke baad
+# OPTIONAL: Agar Azure setup nahi kiya to ye job skip kar sakte ho
+#           Bas deploy job ke steps comment kar do
+# ═══════════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to Azure App Service
+    runs-on: ubuntu-latest
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    # "environment" = GitHub Environments feature
+    # Settings → Environments → production → required reviewers add karo
+    # Matlab deploy se pehle manual approval lega — production ke liye important
+    environment: production
+
+    steps:
+      - name: Download image tag
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tag
+
+      - name: Read image tag
+        run: echo "DEPLOY_IMAGE=$(cat image-tag.txt)" >> $GITHUB_ENV
+        # GITHUB_ENV mein daalne se next steps mein use kar sakte hain
+
+      # Azure Web App pe deploy karo
+      # AZURE_PUBLISH_PROFILE: Azure portal → App Service → Get publish profile
+      # Repo → Settings → Secrets → AZURE_PUBLISH_PROFILE naam se save karo
+      - name: Deploy to Azure Web App for Containers
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          images: ${{ env.DEPLOY_IMAGE }}
+
+      # Deploy ke baad health check karo
+      - name: Verify deployment
+        run: |
+          echo "Waiting for app to start..."
+          sleep 30
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://${{ env.AZURE_APP_NAME }}.azurewebsites.net/health)
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Deployment successful! App is healthy."
+          else
+            echo "❌ Health check failed with status: $STATUS"
+            exit 1
+          fi
